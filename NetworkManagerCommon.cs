@@ -7,23 +7,13 @@ using System.Text;
 
 namespace AssPain_NetworkManager;
 
-internal class NetworkManagerCommon
+internal static class NetworkManagerCommon
 {
-    internal (object instance, Type type) FileManager;
-    internal static IPAddress MyIp = GetLocalIpAddress();
-    internal static readonly List<IPAddress> ConnectedHosts = new List<IPAddress> { { MyIp } };
+    internal static readonly FileManager FileManager = new FileManager();
+    private static readonly IPAddress MyIp = GetLocalIpAddress();
+    internal static readonly List<IPAddress> ConnectedHosts = new List<IPAddress> { MyIp };
     internal const int BroadcastPort = 8008;
-    internal NetworkManagerCommon()
-    {
-        LoadFileManagerDll();
-    }
-
-    private void LoadFileManagerDll()
-    {
-        Assembly myAssembly = Assembly.LoadFrom("AssPain_FileManager.dll");
-        FileManager.type = myAssembly.GetType("AssPain_FileManager.FileManager");
-        //FileManager.instance = Activator.CreateInstance(FileManager.type);
-    }
+    internal const int RsaDataSize = 256;
     
     internal static void P2PDecide(EndPoint groupEp, IPAddress targetIp, Socket sock)
     {
@@ -31,7 +21,9 @@ internal class NetworkManagerCommon
         byte[] buffer = new byte[32];
         while (true)
         {
-            int state = new Random().Next(0, 2);
+            //TODO: change state back to random
+            //int state = new Random().Next(0, 2);
+            const int state = 0;
             sock.SendTo(BitConverter.GetBytes(state), groupEp);
             sock.ReceiveFrom(buffer, ref endPoint);
             while (!((IPEndPoint)endPoint).Address.Equals(targetIp))
@@ -178,17 +170,43 @@ internal class NetworkManagerCommon
     }
 }
 
-internal enum Commands //: byte
+internal class FileManager
 {
-    None = 0,
-    Host = 10,
-    RsaExchange = 11,
-    AesSend = 12,
-    AesReceived = 13,
-    SyncRequest = 20,
-    SyncAccepted = 21,
-    SyncInfo = 22,
-    SyncRejected = 23,
-    FileSend = 30,
-    End = 100
+    // ReSharper disable once InconsistentNaming
+    internal (object instance, Type type) fileManager;
+    internal bool Initialized; // false
+    internal FileManager()
+    {
+        LoadDll();
+    }
+    
+    // ReSharper disable once MemberCanBePrivate.Global
+    internal void LoadDll()
+    {
+        try
+        {
+            //TODO: fix null reference possibility:
+            Assembly myAssembly = Assembly.LoadFrom("AssPain_FileManager.dll");
+            fileManager.type = myAssembly.GetType("AssPain_FileManager.FileManager");
+            //FileManager.instance = Activator.CreateInstance(FileManager.type);
+            Initialized = true;
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine(e);
+        }
+    }
+
+    internal MethodInfo? Get(string methodName)
+    {
+        return fileManager.type.GetMethod(methodName);
+    }
+}
+
+internal static class FileManagerExtension
+{
+    internal static object? Run(this MethodInfo? method, object? data = null)
+    {
+        return method != null ? method.Invoke(NetworkManagerCommon.FileManager.fileManager.instance, new[] { data }) : null;
+    }
 }

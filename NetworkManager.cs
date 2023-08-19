@@ -6,9 +6,6 @@ namespace AssPain_NetworkManager;
 
 public static class NetworkManager
 {
-    internal static readonly NetworkManagerCommon Common = new NetworkManagerCommon();
-    
-
     public static void Listener()
     {
         System.Timers.Timer aTimer = new System.Timers.Timer();
