@@ -37,12 +37,15 @@ internal static class NetworkManagerServer
         {
             bool ending = false;
             bool canSend = false;
-            bool encrypted = false;
+            EncryptionState encryptionState = EncryptionState.None;
             bool sendSync = true;
+            string remoteHostname = string.Empty;
 
             RSACryptoServiceProvider encryptor = new RSACryptoServiceProvider();
             RSACryptoServiceProvider decryptor = new RSACryptoServiceProvider();
             Aes aes = Aes.Create();
+            aes.KeySize = 256;
+            aes.GenerateKey();
 
             List<string> files = new List<string>();
             List<string> sent = new List<string>();
@@ -69,83 +72,102 @@ internal static class NetworkManagerServer
             while (true)
             {
                 Thread.Sleep(100);
-                byte command;
+                CommandsEnum command;
+                byte[]? data = null;
                 if (networkStream.DataAvailable)
                 {
-                    command = encrypted ? networkStream.ReadCommand(ref decryptor) : networkStream.ReadCommand();
+                    switch (encryptionState)
+                    {
+                        case EncryptionState.None:
+                        command = networkStream.ReadCommand();
+                        if (Commands.IsEncryptedOnlyCommand(command))
+                            throw new InvalidOperationException("Received encrypted only command on unencrypted channel");
+                        break;
+                        case EncryptionState.RsaExchange:
+                            (command, data) = networkStream.ReadCommandCombined();
+                            if (command == CommandsEnum.RsaExchange)
+                            {
+                                if (data == null)
+                                {
+                                    throw new InvalidOperationException("Received empty public key");
+                                }
+                            }
+                            else if (command != CommandsEnum.None)
+                            {
+                                throw new InvalidOperationException($"wrong order to establish cypher, required step: {CommandsEnum.RsaExchange}");
+                            }
+                            break;
+                        case EncryptionState.AesSend:
+                            throw new InvalidOperationException("Server doesn't receive aes request");
+                        case EncryptionState.AesReceived:
+                            (command, _, _, _) = networkStream.ReadCommand(ref decryptor);
+                            if (command != CommandsEnum.AesReceived && command != CommandsEnum.None)
+                            {
+                                throw new InvalidOperationException($"wrong order to establish cypher, required step: {CommandsEnum.AesReceived}");
+                            }
+                            break;
+                        case EncryptionState.Encrypted:
+                            (command, data, byte[]? iv, long? length) = networkStream.ReadCommand(ref decryptor);
+                            if (Commands.IsLong(command))
+                            {
+                                if (iv == null || length == null)
+                                {
+                                    throw new InvalidOperationException("Received empty IV or length on long data");
+                                }
+                                aes.IV = iv;
+                                data = networkStream.ReadEncrypted(ref aes, (long)length);
+                            }
+                            break;
+                        default:
+                            throw new ArgumentOutOfRangeException();
+                    }
                 }
                 else
                 {
-                    command = Commands.None;
+                    command = CommandsEnum.None;
                 }
                 Console.WriteLine($"Received command: {command}");
-                if (files.Count > 0 && canSend && encrypted)
+
+                #region Writing
+
+                if (ending && command == CommandsEnum.None)
                 {
-                    string filePath = files[0];
-                    networkStream.WriteCommand(CommandsArr.FileSend, ref encryptor);
-                    networkStream.WriteFile(filePath, ref encryptor, ref aes);
-                    
-                    sent.Add(filePath);
-                    files.Remove(filePath);
-                    if(files.Count == 0)
+                    if (encryptionState == EncryptionState.Encrypted)
                     {
-                        ending = true;
-                    }
-                }
-                else if (ending && !networkStream.DataAvailable)
-                {
-                    //TODO: check encrypted?
-                    networkStream.WriteCommand(CommandsArr.End, ref encryptor);
-                    Console.WriteLine("send end");
-                    ending = false;
-                }
-                else if(command != Commands.Host)
-                {
-                    if(files.Count > 0 && sendSync && encrypted)
-                    {
-                        networkStream.WriteCommand(CommandsArr.SyncRequest, ref encryptor);
-                        sendSync = false;
+                        networkStream.WriteCommand(CommandsArr.End, ref encryptor);
                     }
                     else
                     {
-                        try
-                        {
-                            if (encrypted)
-                                networkStream.WriteCommand(CommandsArr.None, ref encryptor);
-                            else
-                                networkStream.WriteCommand(CommandsArr.None);
-                        }
-                        catch
-                        {
-                            Console.WriteLine("shut");
-                            Thread.Sleep(100);
-                        }
+                        networkStream.WriteCommand(CommandsArr.End);
                     }
                 }
-                
+
+                #endregion
 
                 switch (command)
                 {
-                    case Commands.Host: //host
-                        byte[] data = networkStream.ReadData();
-                        string remoteHostname = Encoding.UTF8.GetString(data, 0, data.Length);
+                    case CommandsEnum.Host: //host
+                        remoteHostname = Encoding.UTF8.GetString(networkStream.ReadData());
                         Console.WriteLine($"hostname {remoteHostname}");
 
                         //https://learn.microsoft.com/en-us/dotnet/standard/security/how-to-store-asymmetric-keys-in-a-key-container
-                        bool shouldGenerateKeys = LoadKeys(remoteHostname, ref decryptor, ref encryptor);
-                        if (shouldGenerateKeys)
+                        if (NetworkManagerCommon.LoadKeys(remoteHostname, ref decryptor, ref encryptor))
                         {
-                            GenerateRsaKeys(ref networkStream, ref decryptor, ref encryptor, remoteHostname);
+                            Console.WriteLine("generating keys");
+                            (string pubKeyString, RSAParameters privKey) = NetworkManagerCommon.CreateKeyPair();
+                            decryptor.ImportParameters(privKey);
+                            networkStream.WriteCommand(CommandsArr.RsaExchange, Encoding.UTF8.GetBytes(pubKeyString));
+                            encryptionState = EncryptionState.RsaExchange;
+                        }
+                        else
+                        {
+                            networkStream.WriteCommand(CommandsArr.AesSend, aes.Key, ref encryptor);
+                            encryptionState = EncryptionState.AesReceived;
                         }
                         
-                        Console.WriteLine($"{encryptor.ToXmlString(false)}");
-                        Console.WriteLine("writing");
                         
-                        GenerateAesKey(ref networkStream, ref decryptor, ref decryptor, ref aes);
-
-                        encrypted = true;
-                        Console.WriteLine("encrypted");
-                        
+                        //TODO: here
+                        /*
                         (bool exists, files) = (Tuple<bool, List<string>>)NetworkManagerCommon.FileManager.Get("GetSyncSongs").Run( remoteHostname );
                         if (!exists)
                         {
@@ -166,25 +188,52 @@ internal static class NetworkManagerServer
                         {
                             ending = true;
                         }
+                        */
                         break;
-                    case Commands.SyncRequest: //sync
+                    case CommandsEnum.RsaExchange:
+                        if (data != null)
+                        {
+                            string remotePubKeyString = Encoding.UTF8.GetString(data);
+                            encryptor.FromXmlString(remotePubKeyString);
+                            //Console.WriteLine($"{decryptor.ToXmlString(true)}\n{encryptor.ToXmlString(false)}");
+                            NetworkManagerCommon.SaveKeys(remoteHostname, data);
+                            
+                            networkStream.WriteCommand(CommandsArr.AesSend, aes.Key, ref encryptor);
+                            encryptionState = EncryptionState.AesReceived;
+                        }
+                        else
+                        {
+                            throw new Exception("WTF?");
+                        }
+                        break;
+                    case CommandsEnum.AesSend:
+                        throw new InvalidOperationException("Server doesn't receive aes request");
+                    case CommandsEnum.AesReceived:
+                        encryptionState = EncryptionState.Encrypted;
+                        Console.WriteLine("encrypted");
+                        //TODO: here
+                        ending = true;
+                        break;
+                    case CommandsEnum.SyncRequest: //sync
                         //TODO: finish
                         break;
-                    case Commands.SyncAccepted://accepted
+                    case CommandsEnum.SyncAccepted://accepted
                         canSend = true;
                         break;
-                    case Commands.SyncInfoRequest://info
+                    case CommandsEnum.SyncInfoRequest://info
                         //get data
                         string json = JsonConvert.SerializeObject(files);
                         Console.WriteLine(json);
                         byte[] msg = Encoding.UTF8.GetBytes(json);
                         networkStream.WriteCommand(CommandsArr.SyncInfo, msg, ref encryptor, ref aes);
                         break;
-                    case Commands.SyncRejected://denied
+                    case CommandsEnum.SyncRejected://denied
                         Console.WriteLine("Sync was denied");
                         //TODO: finish
                         break;
-                    case Commands.FileSend: //file
+                    case CommandsEnum.SyncInfo:
+                        break;
+                    case CommandsEnum.FileSend: //file
                         int i = (int)NetworkManagerCommon.FileManager.Get("GetAvailableFile").Run( "receive" );
                         string root = AppContext.BaseDirectory;
                         string path = $"{root}/tmp/receive{i}.mp3";
@@ -224,7 +273,7 @@ internal static class NetworkManagerServer
                             }
                         }
                         break;
-                    case Commands.End: //end
+                    case CommandsEnum.End: //end
                         Console.WriteLine("got end");
                         if (files.Count > 0)//if work to do
                         {
@@ -233,7 +282,7 @@ internal static class NetworkManagerServer
                         }
                         try
                         {
-                            if (encrypted)
+                            if (encryptionState == EncryptionState.Encrypted)
                                 networkStream.WriteCommand(CommandsArr.End, ref encryptor);
                             else
                                 networkStream.WriteCommand(CommandsArr.End);
@@ -246,9 +295,10 @@ internal static class NetworkManagerServer
                         networkStream.Close();
                         client.Close();
                         goto EndServer;
-                    //break;
+                    case CommandsEnum.None:
                     default: //wait or unimplemented
                         Console.WriteLine($"default: {command}");
+                        Thread.Sleep(25);
                         break;
                 }
             }
@@ -268,137 +318,5 @@ internal static class NetworkManagerServer
             Console.WriteLine("SocketException: {0}", ex);
         }
         server.Stop();
-    }
-
-    private static bool LoadKeys(string remoteHostname, ref RSACryptoServiceProvider decryptor, ref RSACryptoServiceProvider encryptor)
-    {
-        bool shouldGenerateKeys = false;
-        if (OperatingSystem.IsWindows())
-        {
-            try
-            {
-                CspParameters privParam = new CspParameters
-                {
-                    Flags = CspProviderFlags.UseExistingKey | CspProviderFlags.UseMachineKeyStore,
-                    KeyContainerName = $"{remoteHostname}_privkey",
-                };
-
-                decryptor = new RSACryptoServiceProvider(privParam)
-                {
-                    PersistKeyInCsp = true
-                };
-
-                using IsolatedStorageFile isoStore = IsolatedStorageFile.GetStore(IsolatedStorageScope.User | IsolatedStorageScope.Domain | IsolatedStorageScope.Assembly, null, null);
-                //isoStore.DeleteFile($"{remoteHostname}_pubkey");
-                if (!isoStore.FileExists($"{remoteHostname}_pubkey"))
-                {
-                    Console.WriteLine("pubkey doesn't exist");
-                    throw new Exception("This seems to be a stupid way to handle this but it actually works and is memory safe");
-                }
-
-                using IsolatedStorageFileStream isoStream = new IsolatedStorageFileStream($"{remoteHostname}_pubkey", FileMode.Open, isoStore);
-                Console.WriteLine("reading pubkey");
-                byte[] pubKeyByte = isoStream.SafeRead(isoStream.Length);
-                encryptor.FromXmlString(Encoding.UTF8.GetString(ProtectedData.Unprotect(pubKeyByte, null, DataProtectionScope.CurrentUser)));
-            }
-            catch
-            {
-                try
-                {
-                    decryptor.Dispose();
-                }
-                catch
-                {
-                    // ignored
-                }
-
-                Console.WriteLine("Generating keys");
-                shouldGenerateKeys = true;
-
-                CspParameters privParam = new CspParameters
-                {
-                    Flags = CspProviderFlags.UseMachineKeyStore,
-                    KeyContainerName = $"{remoteHostname}_privkey",
-                };
-
-                decryptor = new RSACryptoServiceProvider(privParam)
-                {
-                    PersistKeyInCsp = true
-                };
-            }
-        }else if (OperatingSystem.IsLinux())
-        {
-
-        }
-        else
-        {
-            throw new PlatformNotSupportedException("this platform is not supported");
-        }
-
-        return shouldGenerateKeys;
-    }
-
-    private static void SaveKeys(string remoteHostname, byte[] pubKeyByteRec)
-    {
-        if (OperatingSystem.IsWindows())
-        {
-            using IsolatedStorageFile isoStore = IsolatedStorageFile.GetStore(IsolatedStorageScope.User | IsolatedStorageScope.Domain | IsolatedStorageScope.Assembly, null, null);
-            using IsolatedStorageFileStream isoStream = new IsolatedStorageFileStream($"{remoteHostname}_pubkey", FileMode.OpenOrCreate, isoStore);
-            byte[] pubKeyByte = ProtectedData.Protect(pubKeyByteRec, null, DataProtectionScope.CurrentUser);
-            isoStream.Write(pubKeyByte, 0, pubKeyByte.Length);
-            Console.WriteLine("Written pubkey");
-        }else if (OperatingSystem.IsLinux())
-        {
-
-        }
-        else
-        {
-            throw new PlatformNotSupportedException("this platform is not supported");
-        }
-    }
-
-    private static void GenerateRsaKeys(ref NetworkStream networkStream, ref RSACryptoServiceProvider decryptor, ref RSACryptoServiceProvider encryptor, string remoteHostname)
-    {
-        (string pubKeyString, RSAParameters privKey) = NetworkManagerCommon.CreateKeyPair();
-        decryptor.ImportParameters(privKey);
-        byte[] data = Encoding.UTF8.GetBytes(pubKeyString);
-        
-        networkStream.WriteCommand(CommandsArr.RsaExchange, data);
-        
-        Console.WriteLine($"Written {data.Length}");
-        
-        while (!networkStream.DataAvailable)
-            Thread.Sleep(10);
-        
-        (byte command, byte[] pubKeyByteRec) = networkStream.ReadCommandCombined();
-        Console.WriteLine($"command for enc {command}");
-        
-        if (command != Commands.RsaExchange)
-            throw new Exception("wrong order to establish cypher");
-        
-        encryptor.FromXmlString(Encoding.UTF8.GetString(pubKeyByteRec, 0, pubKeyByteRec.Length));
-        //Console.WriteLine($"{decryptor.ToXmlString(true)}\n{encryptor.ToXmlString(false)}");
-        SaveKeys(remoteHostname, pubKeyByteRec);
-    }
-
-    private static void GenerateAesKey(ref NetworkStream networkStream, ref RSACryptoServiceProvider decryptor, ref RSACryptoServiceProvider encryptor, ref Aes aes)
-    {
-        aes.KeySize = 256;
-        aes.GenerateKey();
-        networkStream.WriteCommand(CommandsArr.AesSend, aes.Key, ref encryptor);
-
-        Console.WriteLine("waiting");
-        while (!networkStream.DataAvailable)
-        {
-            Thread.Sleep(10);
-        }
-                        
-        byte command = networkStream.ReadCommand(ref decryptor);
-        Console.WriteLine($"command for AES {command}");
-
-        if (command != Commands.AesReceived)
-        {
-            throw new Exception("wrong order to establish cypher AES");
-        }
     }
 }

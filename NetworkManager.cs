@@ -16,46 +16,55 @@ public static class NetworkManager
         aTimer.AutoReset = true;
 
         //aTimer.Enabled = true;
+        
+        //NetworkManagerCommon.SendBroadcast();
 
-
-        Socket sock = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-        IPEndPoint iep = new IPEndPoint(IPAddress.Any, NetworkManagerCommon.BroadcastPort);
-        sock.Bind(iep);
-        sock.EnableBroadcast = true;
-        EndPoint groupEp = iep;
-        byte[] buffer = new byte[256];
-
-        try
+        while (true)
         {
-            while (true)
+            Socket sock = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+            IPEndPoint iep = new IPEndPoint(IPAddress.Any, NetworkManagerCommon.BroadcastPort);
+            sock.Bind(iep);
+            sock.EnableBroadcast = true;
+            EndPoint groupEp = iep;
+            byte[] buffer = new byte[256];
+
+            try
             {
-                Console.WriteLine("Waiting for broadcast");
-                sock.ReceiveFrom(buffer, ref groupEp);
-
-
-                IPAddress targetIp = ((IPEndPoint)groupEp).Address;
-                if (Enumerable.Contains(NetworkManagerCommon.ConnectedHosts, targetIp))
+                while (true)
                 {
-                    Console.WriteLine($"Exit pls2");
-                    continue;
+                    Console.WriteLine("Waiting for broadcast");
+                    sock.ReceiveFrom(buffer, ref groupEp);
+
+
+                    IPAddress remoteIp = ((IPEndPoint)groupEp).Address;
+                    if (Enumerable.Contains(NetworkManagerCommon.ConnectedHosts, remoteIp))
+                    {
+                        Console.WriteLine($"Exit pls2");
+                        continue;
+                    }
+
+                    Console.WriteLine($"Received broadcast from {groupEp}");
+                    Console.WriteLine($"string:  {Encoding.UTF8.GetString(buffer)}");
+                
+                    sock.SendTo(Encoding.UTF8.GetBytes(Dns.GetHostName()), groupEp);
+
+                    //TODO: add to available targets. Don't connect directly, check if sync is allowed.
+                    NetworkManagerCommon.ConnectedHosts.Add(remoteIp);
+                    if (!NetworkManagerCommon.P2PDecide(groupEp, remoteIp, ref sock))
+                    {
+                        NetworkManagerCommon.ConnectedHosts.Remove(remoteIp);
+                    }
                 }
-
-                Console.WriteLine($"Received broadcast from {groupEp}");
-                Console.WriteLine($" {Encoding.UTF8.GetString(buffer)}");
-
-                sock.SendTo(Encoding.UTF8.GetBytes(Dns.GetHostName()), groupEp);
-
-                NetworkManagerCommon.ConnectedHosts.Add(targetIp);
-                NetworkManagerCommon.P2PDecide(groupEp, targetIp, sock);
             }
-        }
-        catch (SocketException e)
-        {
-            Console.WriteLine(e);
-        }
-        finally
-        {
-            sock.Close();
+            catch (SocketException e)
+            {
+                Console.WriteLine(e);
+            }
+            finally
+            {
+                sock.Close();
+                sock.Dispose();
+            }
         }
     }
 }
