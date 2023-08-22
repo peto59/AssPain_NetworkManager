@@ -292,6 +292,7 @@ internal class FileManager
 {
     // ReSharper disable once InconsistentNaming
     internal (object instance, Type type) fileManager;
+    private Assembly myAssembly;
     internal bool Initialized; // false
     internal FileManager()
     {
@@ -304,7 +305,7 @@ internal class FileManager
         try
         {
             //TODO: fix null reference possibility:
-            Assembly myAssembly = Assembly.LoadFrom("AssPain_FileManager.dll");
+            myAssembly = Assembly.LoadFrom("AssPain_FileManager.dll");
             fileManager.type = myAssembly.GetType("AssPain_FileManager.FileManager");
             //FileManager.instance = Activator.CreateInstance(FileManager.type);
             Initialized = true;
@@ -318,6 +319,12 @@ internal class FileManager
     internal MethodInfo? Get(string methodName)
     {
         return fileManager.type.GetMethod(methodName);
+    }
+
+    internal Type? GetExternalClass(string className)
+    {
+        return myAssembly.GetType("AssPain_FileManager.FileManager");
+        
     }
 }
 

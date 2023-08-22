@@ -233,7 +233,7 @@ internal static class NetworkManagerServer
                         break;
                     case CommandsEnum.SyncInfo:
                         break;
-                    case CommandsEnum.FileSend: //file
+                    case CommandsEnum.SongSend: //file
                         int i = (int)NetworkManagerCommon.FileManager.Get("GetAvailableFile").Run( "receive" );
                         string root = AppContext.BaseDirectory;
                         string path = $"{root}/tmp/receive{i}.mp3";
