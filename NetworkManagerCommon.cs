@@ -1,4 +1,5 @@
-﻿using System.IO.IsolatedStorage;
+﻿using System.Collections;
+using System.IO.IsolatedStorage;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
@@ -323,8 +324,12 @@ internal class FileManager
 
     internal Type? GetExternalClass(string className)
     {
-        return myAssembly.GetType("AssPain_FileManager.FileManager");
-        
+        Type? type = myAssembly.GetType($"AssPain_FileManager.{className}");
+        Type genericListType = typeof(List<>).MakeGenericType(type);
+
+        // Instantiate the generic List<T>
+        IList list = (IList)Activator.CreateInstance(genericListType);
+        return type;
     }
 }
 
