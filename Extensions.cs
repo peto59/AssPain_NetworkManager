@@ -1,6 +1,9 @@
 using System.Net.Sockets;
 using System.Security.Cryptography;
+using System.Text;
 using System.Xml.Serialization;
+using AssPain_FileManager;
+using Newtonsoft.Json;
 
 namespace AssPain_NetworkManager;
 
@@ -551,21 +554,19 @@ internal static class WriteExtensions
         byte[] rv = new byte[len];
         aes.GenerateIV();
         
-        Buffer.BlockCopy(CommandsArr.SyncInfo, 0, rv, 0, 1);
+        SongJsonConverter customConverter = new SongJsonConverter(false);
+        byte[] data = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(songs, customConverter));
+        
+        Buffer.BlockCopy(CommandsArr.SongRequestInfo, 0, rv, 0, 1);
         Buffer.BlockCopy(aes.IV, 0, rv, 1, 16);
-        
-        MemoryStream msEncrypted = new MemoryStream();
-        CryptoStream csEncrypt = new CryptoStream(msEncrypted, aes.CreateEncryptor(), CryptoStreamMode.Write, true);
-        XmlSerializer serializer = new XmlSerializer(songs.GetType());
-        serializer.Serialize(csEncrypt, songs);
-        csEncrypt.Dispose();
-        long encryptedDataLength = msEncrypted.Length + (16 - msEncrypted.Length % 16);
-        
-        Buffer.BlockCopy(BitConverter.GetBytes(encryptedDataLength), 0, rv, 17, 8);
+        Buffer.BlockCopy(BitConverter.GetBytes(data.LongLength), 0, rv, 17, 8);
+
         rv = encryptor.Encrypt(rv, true);
         stream.Write(rv, 0, rv.Length);
-
-        msEncrypted.Dispose();
+        
+        CryptoStream csEncrypt = new CryptoStream(stream, aes.CreateEncryptor(), CryptoStreamMode.Write, true);
+        csEncrypt.WriteLongData(data);
+        csEncrypt.Dispose();
     }
 
     /// <summary>

@@ -12,4 +12,10 @@
       <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="7.0.1" />
     </ItemGroup>
 
+    <ItemGroup>
+      <Reference Include="AssPain_FileManager">
+        <HintPath>..\AssPain_FileManager\bin\Debug\net7.0\AssPain_FileManager.dll</HintPath>
+      </Reference>
+    </ItemGroup>
+
 </Project>

@@ -11,7 +11,6 @@ namespace AssPain_NetworkManager;
 
 internal static class NetworkManagerCommon
 {
-    internal static readonly FileManager FileManager = new FileManager();
     private static readonly IPAddress MyIp = GetLocalIpAddress();
     internal static readonly List<IPAddress> ConnectedHosts = new List<IPAddress> { MyIp };
     internal const int BroadcastPort = 8008;
@@ -145,7 +144,7 @@ internal static class NetworkManagerCommon
             
     }
     
-    internal static void SendBroadcast()
+    internal static async void SendBroadcast()
     {
 
         if (MyIp.ToString() != "0.0.0.0")
@@ -164,25 +163,35 @@ internal static class NetworkManagerCommon
 
             int retries = 0;
             const int maxRetries = 3;
+            List<Task> tasks = new List<Task>();
 
             IPEndPoint iep = new IPEndPoint(IPAddress.Any, BroadcastPort);
             bool processedAtLestOne = false;
             do
             {
-                EndPoint groupEp = iep;
                 sock.SendTo(Encoding.UTF8.GetBytes(Dns.GetHostName()), destinationEndpoint);
                 retries++;
                 try
                 {
-                    sock.ReceiveFrom(buffer, ref groupEp);
-                    IPAddress targetIp = ((IPEndPoint)groupEp).Address;
-                    string remoteHostname = Encoding.UTF8.GetString(buffer, 0, buffer.Length);
-            
-                    //TODO: add to available targets. Don't connect directly, check if sync is allowed.
-                    ConnectedHosts.Add(targetIp);
-                    if (!P2PDecide(groupEp, targetIp, ref sock))
+                    while (true)
                     {
-                        ConnectedHosts.Remove(targetIp);
+                        EndPoint groupEp = iep;
+                        sock.ReceiveFrom(buffer, ref groupEp);
+                        IPAddress targetIp = ((IPEndPoint)groupEp).Address;
+                        string remoteHostname = Encoding.UTF8.GetString(buffer, 0, buffer.Length);
+            
+                        //TODO: add to available targets. Don't connect directly, check if sync is allowed.
+                        ConnectedHosts.Add(targetIp);
+                        Task task = new Task(() =>
+                        {
+                            // ReSharper disable once AccessToDisposedClosure
+                            if (!P2PDecide(groupEp, targetIp, ref sock))
+                            {
+                                ConnectedHosts.Remove(targetIp);
+                            }
+                        });
+                        tasks.Add(task);
+                        task.Start();
                     }
                 }
                 catch
@@ -194,6 +203,9 @@ internal static class NetworkManagerCommon
             {
                 Console.WriteLine("No reply");
             }
+            
+            //wait for all tasks before disposing socket
+            await Task.WhenAll(tasks);
             sock.Close();
             sock.Dispose();
         }
@@ -286,57 +298,5 @@ internal static class NetworkManagerCommon
         {
             throw new PlatformNotSupportedException("this platform is not supported");
         }
-    }
-}
-
-internal class FileManager
-{
-    // ReSharper disable once InconsistentNaming
-    internal (object instance, Type type) fileManager;
-    private Assembly myAssembly;
-    internal bool Initialized; // false
-    internal FileManager()
-    {
-        LoadDll();
-    }
-    
-    // ReSharper disable once MemberCanBePrivate.Global
-    internal void LoadDll()
-    {
-        try
-        {
-            //TODO: fix null reference possibility:
-            myAssembly = Assembly.LoadFrom("AssPain_FileManager.dll");
-            fileManager.type = myAssembly.GetType("AssPain_FileManager.FileManager");
-            //FileManager.instance = Activator.CreateInstance(FileManager.type);
-            Initialized = true;
-        }
-        catch (Exception e)
-        {
-            Console.WriteLine(e);
-        }
-    }
-
-    internal MethodInfo? Get(string methodName)
-    {
-        return fileManager.type.GetMethod(methodName);
-    }
-
-    internal Type? GetExternalClass(string className)
-    {
-        Type? type = myAssembly.GetType($"AssPain_FileManager.{className}");
-        Type genericListType = typeof(List<>).MakeGenericType(type);
-
-        // Instantiate the generic List<T>
-        IList list = (IList)Activator.CreateInstance(genericListType);
-        return type;
-    }
-}
-
-internal static class FileManagerExtension
-{
-    internal static object? Run(this MethodInfo? method, object? data = null)
-    {
-        return method != null ? method.Invoke(NetworkManagerCommon.FileManager.fileManager.instance, new[] { data }) : null;
     }
 }

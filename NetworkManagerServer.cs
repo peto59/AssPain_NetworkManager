@@ -4,6 +4,7 @@ using System.Net.Sockets;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
+using AssPain_FileManager;
 using Newtonsoft.Json;
 
 namespace AssPain_NetworkManager;
@@ -38,6 +39,8 @@ internal static class NetworkManagerServer
             bool ending = false;
             bool canSend = false;
             EncryptionState encryptionState = EncryptionState.None;
+            SyncRequestState syncRequestState = SyncRequestState.None;
+            SongSendRequestState songSendRequestState = SongSendRequestState.None;
             bool sendSync = true;
             string remoteHostname = string.Empty;
 
@@ -69,11 +72,14 @@ internal static class NetworkManagerServer
 
                 
 
+            Thread.Sleep(100);
             while (true)
             {
-                Thread.Sleep(100);
                 CommandsEnum command;
                 byte[]? data = null;
+
+                #region Reading
+
                 if (networkStream.DataAvailable)
                 {
                     switch (encryptionState)
@@ -119,14 +125,17 @@ internal static class NetworkManagerServer
                             }
                             break;
                         default:
-                            throw new ArgumentOutOfRangeException();
+                            throw new ArgumentOutOfRangeException(nameof(encryptionState));
                     }
                 }
                 else
                 {
                     command = CommandsEnum.None;
                 }
+
                 Console.WriteLine($"Received command: {command}");
+                #endregion
+                
 
                 #region Writing
 
@@ -214,64 +223,48 @@ internal static class NetworkManagerServer
                         //TODO: here
                         ending = true;
                         break;
+                    case CommandsEnum.SongRequest:
+                        break;
+                    case CommandsEnum.SongRequestInfoRequest://info
+                        //get data
+                        string json = JsonConvert.SerializeObject(files);
+                        Console.WriteLine(json);
+                        byte[] msg = Encoding.UTF8.GetBytes(json);
+                        networkStream.WriteCommand(CommandsArr.SongRequestInfo, msg, ref encryptor, ref aes);
+                        break;
+                    case CommandsEnum.SongRequestInfo:
+                        break;
+                    case CommandsEnum.SongRequestAccepted:
+                        break;
+                    case CommandsEnum.SongRequestRejected:
+                        break;
                     case CommandsEnum.SyncRequest: //sync
                         //TODO: finish
                         break;
                     case CommandsEnum.SyncAccepted://accepted
                         canSend = true;
                         break;
-                    case CommandsEnum.SyncInfoRequest://info
-                        //get data
-                        string json = JsonConvert.SerializeObject(files);
-                        Console.WriteLine(json);
-                        byte[] msg = Encoding.UTF8.GetBytes(json);
-                        networkStream.WriteCommand(CommandsArr.SyncInfo, msg, ref encryptor, ref aes);
-                        break;
+                    
                     case CommandsEnum.SyncRejected://denied
                         Console.WriteLine("Sync was denied");
                         //TODO: finish
                         break;
-                    case CommandsEnum.SyncInfo:
-                        break;
+                    
                     case CommandsEnum.SongSend: //file
-                        int i = (int)NetworkManagerCommon.FileManager.Get("GetAvailableFile").Run( "receive" );
+                        int i = FileManager.GetAvailableFile("receive");
                         string root = AppContext.BaseDirectory;
                         string path = $"{root}/tmp/receive{i}.mp3";
                         
                         networkStream.ReadFile(path, ref decryptor, ref aes);
-
-                        //TODO: refactor method of calling file manager to be actually readable
+                        
                         //TODO: move to song objects
-                        //TODO: offload to FileManager
-                        MethodInfo? sanitize = NetworkManagerCommon.FileManager.Get("Sanitize");
-                        string name = (string)sanitize.Run(path);
-                        string artist = (string)NetworkManagerCommon.FileManager.Get("GetAlias").Run( sanitize.Run( ((string[])NetworkManagerCommon.FileManager.Get("GetSongArtist").Run( path ))[0] ) );
-                        string unAlbum = (string)NetworkManagerCommon.FileManager.Get("GetSongAlbum").Run( path );
-                        if (unAlbum == null)
-                        {
-                            Directory.CreateDirectory($"{root}/music/{artist}");
-                            if (!File.Exists($"{root}/music/{artist}/{name}.mp3"))
-                            {
-                                File.Move(path, $"{root}/music/{artist}/{name}.mp3");
-                            }
-                            else
-                            {
-                                File.Delete(path);
-                            }
-                        }
-                        else
-                        {
-                            string album = (string)sanitize.Run(unAlbum);
-                            Directory.CreateDirectory($"{root}/music/{artist}/{album}");
-                            if (!File.Exists($"{root}/music/{artist}/{album}/{name}.mp3"))
-                            {
-                                File.Move(path, $"{root}/music/{artist}/{album}/{name}.mp3");
-                            }
-                            else
-                            {
-                                File.Delete(path);
-                            }
-                        }
+                        FileManager.AddSong(path);
+                        break;
+                    case CommandsEnum.ImageSend:
+                        break;
+                    case CommandsEnum.ArtistImageRequest:
+                        break;
+                    case CommandsEnum.AlbumImageRequest:
                         break;
                     case CommandsEnum.End: //end
                         Console.WriteLine("got end");
@@ -295,6 +288,9 @@ internal static class NetworkManagerServer
                         networkStream.Close();
                         client.Close();
                         goto EndServer;
+                    case CommandsEnum.Wait:
+                        Thread.Sleep(25);
+                        break;
                     case CommandsEnum.None:
                     default: //wait or unimplemented
                         Console.WriteLine($"default: {command}");
