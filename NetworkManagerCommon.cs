@@ -14,28 +14,29 @@ internal static class NetworkManagerCommon
     private static readonly IPAddress MyIp = GetLocalIpAddress();
     internal static readonly List<IPAddress> ConnectedHosts = new List<IPAddress> { MyIp };
     internal const int BroadcastPort = 8008;
+    internal const int P2PPort = 8009;
     internal const int RsaDataSize = 256;
     
-    internal static bool P2PDecide(EndPoint groupEp, IPAddress targetIp, ref Socket sock)
+    internal static bool P2PDecide(IPAddress ipAddress)
     {
-        EndPoint endPoint = groupEp;
+#if DEBUG
+        Console.WriteLine($"New P2P from {ipAddress}");
+#endif
+        Socket sock = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+        IPEndPoint iep = new IPEndPoint(ipAddress, P2PPort);
+        EndPoint endPoint = iep;
         byte[] buffer = new byte[4];
         while (true)
         {
             //TODO: change state back to random
             //int state = new Random().Next(0, 2);
             const int state = 0;
-            sock.SendTo(BitConverter.GetBytes(state), groupEp);
+            sock.SendTo(BitConverter.GetBytes(state), endPoint);
             int maxResponseCounter = 4;
             int response;
             do
             {
                 sock.ReceiveFrom(buffer, ref endPoint);
-                while (!((IPEndPoint)endPoint).Address.Equals(targetIp))
-                {
-                    //theoretically never...
-                    sock.ReceiveFrom(buffer, ref endPoint);
-                }
                 response = BitConverter.ToInt32(buffer);
                 maxResponseCounter--;
 #if DEBUG
@@ -58,29 +59,10 @@ internal static class NetworkManagerCommon
                 Console.WriteLine("Server");
                 
                 (TcpListener server, int listenPort) = NetworkManagerServer.StartServer(MyIp);
-                sock.SendTo(BitConverter.GetBytes(listenPort), groupEp);
-                new Thread(() => {
-                    try
-                    {
-                        NetworkManagerServer.Server(server, targetIp);
-                    }
-                    catch (Exception e)
-                    {
-#if DEBUG
-                        Console.WriteLine(e.ToString());
-#endif
-                    }
-                }).Start();
-                return true;
-            }
-            //client
-            Console.WriteLine("Client");
-            sock.ReceiveFrom(buffer, ref groupEp);
-            int sendPort = BitConverter.ToInt32(buffer);
-            new Thread(() => {
+                sock.SendTo(BitConverter.GetBytes(listenPort), endPoint);
                 try
                 {
-                    NetworkManagerClient.Client(((IPEndPoint)groupEp).Address, sendPort);
+                    NetworkManagerServer.Server(server, ipAddress);
                 }
                 catch (Exception e)
                 {
@@ -88,7 +70,22 @@ internal static class NetworkManagerCommon
                     Console.WriteLine(e.ToString());
 #endif
                 }
-            }).Start();
+                return true;
+            }
+            //client
+            Console.WriteLine("Client");
+            sock.ReceiveFrom(buffer, ref endPoint);
+            int sendPort = BitConverter.ToInt32(buffer);
+            try
+            {
+                NetworkManagerClient.Client(((IPEndPoint)endPoint).Address, sendPort);
+            }
+            catch (Exception e)
+            {
+#if DEBUG
+                Console.WriteLine(e.ToString());
+#endif
+            }
             return true;
         }
     }
@@ -163,7 +160,6 @@ internal static class NetworkManagerCommon
 
             int retries = 0;
             const int maxRetries = 3;
-            List<Task> tasks = new List<Task>();
 
             IPEndPoint iep = new IPEndPoint(IPAddress.Any, BroadcastPort);
             bool processedAtLestOne = false;
@@ -182,16 +178,14 @@ internal static class NetworkManagerCommon
             
                         //TODO: add to available targets. Don't connect directly, check if sync is allowed.
                         ConnectedHosts.Add(targetIp);
-                        Task task = new Task(() =>
+                        new Thread(() =>
                         {
                             // ReSharper disable once AccessToDisposedClosure
-                            if (!P2PDecide(groupEp, targetIp, ref sock))
+                            if (!P2PDecide(targetIp))
                             {
                                 ConnectedHosts.Remove(targetIp);
                             }
-                        });
-                        tasks.Add(task);
-                        task.Start();
+                        }).Start();
                     }
                 }
                 catch
@@ -203,9 +197,6 @@ internal static class NetworkManagerCommon
             {
                 Console.WriteLine("No reply");
             }
-            
-            //wait for all tasks before disposing socket
-            await Task.WhenAll(tasks);
             sock.Close();
             sock.Dispose();
         }

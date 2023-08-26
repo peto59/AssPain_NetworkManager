@@ -50,10 +50,9 @@ public static class NetworkManager
 
                     //TODO: add to available targets. Don't connect directly, check if sync is allowed.
                     NetworkManagerCommon.ConnectedHosts.Add(remoteIp);
-                    EndPoint ep = groupEp;
-                    new Task(() =>
+                    new Thread(() =>
                     {
-                        if (!NetworkManagerCommon.P2PDecide(ep, remoteIp, ref sock))
+                        if (!NetworkManagerCommon.P2PDecide(remoteIp))
                         {
                             NetworkManagerCommon.ConnectedHosts.Remove(remoteIp);
                         }
