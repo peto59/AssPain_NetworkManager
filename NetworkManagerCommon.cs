@@ -23,23 +23,34 @@ internal static class NetworkManagerCommon
         Console.WriteLine($"New P2P from {ipAddress}");
 #endif
         Socket sock = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
-        IPEndPoint iep = new IPEndPoint(ipAddress, P2PPort);
+        //TODO: add timeout
+        //sock.ReceiveTimeout = 2000;
+        IPEndPoint iep = new IPEndPoint(IPAddress.Parse("192.168.1.74"), P2PPort);
         EndPoint endPoint = iep;
+        sock.Bind(endPoint);
+        iep = new IPEndPoint(ipAddress, P2PPort);
+        endPoint = iep;
         byte[] buffer = new byte[4];
+        //TODO: this is stupid
+        Thread.Sleep(1000);
         while (true)
         {
             //TODO: change state back to random
             //int state = new Random().Next(0, 2);
             const int state = 0;
             sock.SendTo(BitConverter.GetBytes(state), endPoint);
+#if DEBUG
+                Console.WriteLine($"My state: {state}");
+#endif
             int maxResponseCounter = 4;
             int response;
             do
             {
-                sock.ReceiveFrom(buffer, ref endPoint);
+                sock.ReceiveFrom(buffer, 4, SocketFlags.None, ref endPoint);
                 response = BitConverter.ToInt32(buffer);
                 maxResponseCounter--;
 #if DEBUG
+                Console.WriteLine($"Remote state: {response}");
                 if (response is not (0 or 1))
                 {
                     Console.WriteLine($"Got invalid state in P2PDecide: {response}");
@@ -49,6 +60,7 @@ internal static class NetworkManagerCommon
             
             if (maxResponseCounter == 0)
             {
+                sock.Dispose();
                 return false;
             }
 
@@ -62,6 +74,7 @@ internal static class NetworkManagerCommon
                 sock.SendTo(BitConverter.GetBytes(listenPort), endPoint);
                 try
                 {
+                    sock.Dispose();
                     NetworkManagerServer.Server(server, ipAddress);
                 }
                 catch (Exception e)
@@ -78,6 +91,7 @@ internal static class NetworkManagerCommon
             int sendPort = BitConverter.ToInt32(buffer);
             try
             {
+                sock.Dispose();
                 NetworkManagerClient.Client(((IPEndPoint)endPoint).Address, sendPort);
             }
             catch (Exception e)
@@ -174,7 +188,7 @@ internal static class NetworkManagerCommon
                         EndPoint groupEp = iep;
                         sock.ReceiveFrom(buffer, ref groupEp);
                         IPAddress targetIp = ((IPEndPoint)groupEp).Address;
-                        string remoteHostname = Encoding.UTF8.GetString(buffer, 0, buffer.Length);
+                        string remoteHostname = Encoding.UTF8.GetString(buffer).TrimEnd('\0');
             
                         //TODO: add to available targets. Don't connect directly, check if sync is allowed.
                         ConnectedHosts.Add(targetIp);

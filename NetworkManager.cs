@@ -43,8 +43,9 @@ public static class NetworkManager
                         continue;
                     }
 
+                    string remoteHostname = Encoding.UTF8.GetString(buffer).TrimEnd('\0');
                     Console.WriteLine($"Received broadcast from {groupEp}");
-                    Console.WriteLine($"string:  {Encoding.UTF8.GetString(buffer)}");
+                    Console.WriteLine($"re,pte hostname:  {remoteHostname}");
                 
                     sock.SendTo(Encoding.UTF8.GetBytes(Dns.GetHostName()), groupEp);
 
