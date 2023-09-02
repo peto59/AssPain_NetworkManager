@@ -1,11 +1,10 @@
-﻿using System.Collections;
-using System.IO.IsolatedStorage;
+﻿using System.IO.IsolatedStorage;
 using System.Net;
 using System.Net.NetworkInformation;
 using System.Net.Sockets;
-using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
+using AssPain_FileManager;
 
 namespace AssPain_NetworkManager;
 
@@ -14,17 +13,19 @@ internal static class NetworkManagerCommon
     private static readonly IPAddress MyIp = GetLocalIpAddress();
     internal static readonly List<IPAddress> ConnectedHosts = new List<IPAddress> { MyIp };
     internal const int BroadcastPort = 8008;
-    internal const int P2PPort = 8009;
+    private const int P2PPort = 8009;
     internal const int RsaDataSize = 256;
     
-    internal static bool P2PDecide(IPAddress ipAddress)
+    internal static bool P2PDecide(IPAddress ipAddress, List<Song>? songsToSend = null)
     {
+        songsToSend ??= new List<Song>();
 #if DEBUG
         Console.WriteLine($"New P2P from {ipAddress}");
 #endif
         Socket sock = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
         //TODO: add timeout
         //sock.ReceiveTimeout = 2000;
+        //TODO: get IP
         IPEndPoint iep = new IPEndPoint(IPAddress.Parse("192.168.1.74"), P2PPort);
         EndPoint endPoint = iep;
         sock.Bind(endPoint);
@@ -75,7 +76,7 @@ internal static class NetworkManagerCommon
                 try
                 {
                     sock.Dispose();
-                    NetworkManagerServer.Server(server, ipAddress);
+                    NetworkManagerServer.Server(server, ipAddress, songsToSend);
                 }
                 catch (Exception e)
                 {
@@ -92,7 +93,7 @@ internal static class NetworkManagerCommon
             try
             {
                 sock.Dispose();
-                NetworkManagerClient.Client(((IPEndPoint)endPoint).Address, sendPort);
+                NetworkManagerClient.Client(((IPEndPoint)endPoint).Address, sendPort, songsToSend);
             }
             catch (Exception e)
             {
@@ -155,7 +156,7 @@ internal static class NetworkManagerCommon
             
     }
     
-    internal static async void SendBroadcast()
+    internal static void SendBroadcast(List<Song>? songsToSend = null)
     {
 
         if (MyIp.ToString() != "0.0.0.0")
@@ -195,7 +196,7 @@ internal static class NetworkManagerCommon
                         new Thread(() =>
                         {
                             // ReSharper disable once AccessToDisposedClosure
-                            if (!P2PDecide(targetIp))
+                            if (!P2PDecide(targetIp, songsToSend))
                             {
                                 ConnectedHosts.Remove(targetIp);
                             }

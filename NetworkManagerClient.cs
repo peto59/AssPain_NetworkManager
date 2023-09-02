@@ -1,12 +1,13 @@
 ﻿using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using AssPain_FileManager;
 
 namespace AssPain_NetworkManager;
 
 internal static class NetworkManagerClient
 {
-    internal static void Client(IPAddress server, int port)
+    internal static void Client(IPAddress server, int port, List<Song> songsToSend)
     {
         Console.WriteLine($"Connecting to: {server}:{port}");
         TcpClient client = new TcpClient(server.ToString(), port);

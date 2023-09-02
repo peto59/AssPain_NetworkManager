@@ -32,16 +32,15 @@ internal static class NetworkManagerServer
         return (server, listenPort);
     }
     
-    internal static void Server(TcpListener server, IPAddress targetIp)
+    internal static void Server(TcpListener server, IPAddress targetIp, List<Song> songsToSend)
     {
+        //TODO: extra variables to check if can receive files
         try
         {
             bool ending = false;
-            bool canSend = false;
             EncryptionState encryptionState = EncryptionState.None;
             SyncRequestState syncRequestState = SyncRequestState.None;
             SongSendRequestState songSendRequestState = SongSendRequestState.None;
-            bool sendSync = true;
             string remoteHostname = string.Empty;
 
             RSACryptoServiceProvider encryptor = new RSACryptoServiceProvider();
@@ -49,9 +48,11 @@ internal static class NetworkManagerServer
             Aes aes = Aes.Create();
             aes.KeySize = 256;
             aes.GenerateKey();
+            int ackCount = 0;
 
             List<string> files = new List<string>();
             List<string> sent = new List<string>();
+            Dictionary<string, string> albumArtistPair = new Dictionary<string, string>();
 
             // Enter the listening loop.
             Console.Write("Waiting for a connection... ");
@@ -77,6 +78,7 @@ internal static class NetworkManagerServer
             {
                 CommandsEnum command;
                 byte[]? data = null;
+                long? length = null;
 
                 #region Reading
 
@@ -113,7 +115,7 @@ internal static class NetworkManagerServer
                             }
                             break;
                         case EncryptionState.Encrypted:
-                            (command, data, byte[]? iv, long? length) = networkStream.ReadCommand(ref decryptor);
+                            (command, data, byte[]? iv, length) = networkStream.ReadCommand(ref decryptor);
                             if (Commands.IsLong(command))
                             {
                                 if (iv == null || length == null)
@@ -121,7 +123,10 @@ internal static class NetworkManagerServer
                                     throw new InvalidOperationException("Received empty IV or length on long data");
                                 }
                                 aes.IV = iv;
-                                data = networkStream.ReadEncrypted(ref aes, (long)length);
+                                if (!Commands.IsFileCommand(command))
+                                {
+                                    data = networkStream.ReadEncrypted(ref aes, (long)length);
+                                }
                             }
                             break;
                         default:
@@ -150,6 +155,7 @@ internal static class NetworkManagerServer
                         networkStream.WriteCommand(CommandsArr.End);
                     }
                 }
+                //TODO: after adding trusted sync targets copy from android
 
                 #endregion
 
@@ -173,31 +179,6 @@ internal static class NetworkManagerServer
                             networkStream.WriteCommand(CommandsArr.AesSend, aes.Key, ref encryptor);
                             encryptionState = EncryptionState.AesReceived;
                         }
-                        
-                        
-                        //TODO: here
-                        /*
-                        (bool exists, files) = (Tuple<bool, List<string>>)NetworkManagerCommon.FileManager.Get("GetSyncSongs").Run( remoteHostname );
-                        if (!exists)
-                        {
-                            
-                            NetworkManagerCommon.FileManager.Get("AddSyncTarget").Run( remoteHostname );
-                            bool x = true;
-                            if (x) // show some prompt if and which files to send
-                            {
-                                //TODO: Stupid! Need to ask before starting connection
-                                NetworkManagerCommon.FileManager.Get("GetSongs").Run();
-                            }
-                            else
-                            {
-                                ending = true;
-                            }
-                        }
-                        if (files.Count == 0)
-                        {
-                            ending = true;
-                        }
-                        */
                         break;
                     case CommandsEnum.RsaExchange:
                         if (data != null)
@@ -235,40 +216,145 @@ internal static class NetworkManagerServer
                     case CommandsEnum.SongRequestInfo:
                         break;
                     case CommandsEnum.SongRequestAccepted:
+                        songSendRequestState = SongSendRequestState.Accepted;
                         break;
                     case CommandsEnum.SongRequestRejected:
+                        songSendRequestState = SongSendRequestState.Rejected;
                         break;
                     case CommandsEnum.SyncRequest: //sync
                         //TODO: finish
+                        bool x = true; //filemanager . is trusted sync target
+                        if (x)
+                        {
+                            networkStream.WriteCommand(CommandsArr.SyncAccepted, ref encryptor);
+                        }
+                        else
+                        {
+                            networkStream.WriteCommand(CommandsArr.SyncRejected, ref encryptor);
+                        }
                         break;
                     case CommandsEnum.SyncAccepted://accepted
-                        canSend = true;
+                        syncRequestState = SyncRequestState.Accepted;
                         break;
-                    
                     case CommandsEnum.SyncRejected://denied
-                        Console.WriteLine("Sync was denied");
-                        //TODO: finish
+                        syncRequestState = SyncRequestState.Rejected;
                         break;
-                    
                     case CommandsEnum.SongSend: //file
-                        int i = FileManager.GetAvailableFile("receive");
-                        string root = AppContext.BaseDirectory;
-                        string path = $"{root}/tmp/receive{i}.mp3";
-                        
-                        networkStream.ReadFile(path, ref decryptor, ref aes);
-                        
-                        //TODO: move to song objects
-                        FileManager.AddSong(path);
+                        //TODO: check if can receive file
+                        if (length != null)
+                        {
+#if DEBUG
+                            Console.WriteLine($"file length: {length}");
+#endif
+                            try
+                            {
+                                int songIndex = FileManager.GetAvailableFile("receive");
+                                string songPath = $"{FileManager.PrivatePath}/tmp/receive{songIndex}.mp3";
+                                networkStream.ReadFile(songPath, (long)length, ref aes);
+                                (List<string> missingArtists, (string missingAlbum, string albumArtistPath)) =
+                                    FileManager.AddSong(songPath, true);
+                                foreach (string name in missingArtists)
+                                {
+#if DEBUG
+                                    Console.WriteLine($"Missing artist: {name}");
+#endif
+                                    networkStream.WriteCommand(CommandsArr.ArtistImageRequest,
+                                        Encoding.UTF8.GetBytes(name), ref encryptor);
+                                }
+
+                                if (!string.IsNullOrEmpty(missingAlbum))
+                                {
+#if DEBUG
+                                    Console.WriteLine($"Missing album: {missingAlbum}");
+#endif
+                                    networkStream.WriteCommand(CommandsArr.AlbumImageRequest,
+                                        Encoding.UTF8.GetBytes(missingAlbum), ref encryptor);
+                                    albumArtistPair.TryAdd(missingAlbum, albumArtistPath);
+                                }
+                            }
+                            catch (Exception e)
+                            {
+#if DEBUG
+                                Console.WriteLine(e);
+#endif
+                            }
+                            networkStream.WriteCommand(CommandsArr.Ack, ref encryptor);
+                        }
                         break;
-                    case CommandsEnum.ImageSend:
+                    case CommandsEnum.ArtistImageSend:
+                        if (data != null && length != null)
+                        {
+                            try
+                            {
+                                string artist = FileManager.GetAlias(Encoding.UTF8.GetString(data));
+                                string artistPath = FileManager.Sanitize(artist);
+                                //Directory.CreateDirectory($"{FileManager.MusicFolder}/{artistPath}");
+                                int imageIndex = FileManager.GetAvailableFile("networkImage", "image");
+                                string imagePath = $"{FileManager.PrivatePath}/tmp/networkImage{imageIndex}.image";
+                                networkStream.ReadFile(imagePath, (long)length, ref aes);
+                                string imageExtension = FileManager.GetImageFormat(imagePath);
+                                string artistImagePath =
+                                    $"{FileManager.MusicFolder}/{artistPath}/cover.{imageExtension.TrimStart('.')}";
+                                File.Move(imagePath, artistImagePath);
+                                List<Artist> artists = FileManager.StateHandler.Artists.Search(artist);
+                                if (artists.Count > 1)
+                                {
+                                    int artistIndex = FileManager.StateHandler.Artists.IndexOf(artists[0]);
+                                    FileManager.StateHandler.Artists[artistIndex] =
+                                        new Artist(artists[0], artistImagePath);
+                                }
+                            }
+                            catch (Exception e)
+                            {
+#if DEBUG
+                                Console.WriteLine(e);
+#endif
+                            }
+                            networkStream.WriteCommand(CommandsArr.Ack, ref encryptor);
+                        }
+                        break;
+                    case CommandsEnum.AlbumImageSend:
+                        if (data != null && length != null)
+                        {
+                            try
+                            {
+                                string album = Encoding.UTF8.GetString(data);
+                                string albumPath = FileManager.Sanitize(album);
+                                //Directory.CreateDirectory($"{FileManager.MusicFolder}/{albumArtistPair[album]}/{albumPath}");
+                                int imageIndex = FileManager.GetAvailableFile("networkImage", "image");
+                                string imagePath = $"{FileManager.PrivatePath}/tmp/networkImage{imageIndex}.image";
+                                networkStream.ReadFile(imagePath, (long)length, ref aes);
+                                string imageExtension = FileManager.GetImageFormat(imagePath);
+                                string albumImagePath =
+                                    $"{FileManager.MusicFolder}/{albumArtistPair[album]}/{albumPath}/cover.{imageExtension.TrimStart('.')}";
+                                File.Move(imagePath, albumImagePath);
+                                List<Album> albums = FileManager.StateHandler.Albums.Search(album);
+                                if (albums.Count > 1)
+                                {
+                                    int albumIndex = FileManager.StateHandler.Albums.IndexOf(albums[0]);
+                                    FileManager.StateHandler.Albums[albumIndex] = new Album(albums[0], albumImagePath);
+                                }
+                                albumArtistPair.Remove(album);
+                            }
+                            catch (Exception e)
+                            {
+#if DEBUG
+                                Console.WriteLine(e);
+#endif
+                            }
+                            networkStream.WriteCommand(CommandsArr.Ack, ref encryptor);
+                        }
                         break;
                     case CommandsEnum.ArtistImageRequest:
                         break;
                     case CommandsEnum.AlbumImageRequest:
                         break;
+                    case CommandsEnum.Ack:
+                        ackCount++;
+                        break;
                     case CommandsEnum.End: //end
                         Console.WriteLine("got end");
-                        if (files.Count > 0)//if work to do
+                        if (!ending || ackCount < 0)//if work to do
                         {
                             Console.WriteLine("Still work to do");
                             continue;
@@ -294,7 +380,7 @@ internal static class NetworkManagerServer
                     case CommandsEnum.None:
                     default: //wait or unimplemented
                         Console.WriteLine($"default: {command}");
-                        Thread.Sleep(25);
+                        Thread.Sleep(100);
                         break;
                 }
             }
